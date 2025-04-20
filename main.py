@@ -4,6 +4,9 @@ Telegram bot that translates unknown phrases using OpenAI and sends them to Anki
 """
 import os
 import logging
+import json
+import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, ForceReply, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -28,6 +31,33 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+# Create logs directory if it doesn't exist
+logs_dir = Path("logs")
+logs_dir.mkdir(exist_ok=True)
+
+# Function to log data to JSON file
+def log_to_file(data, log_type):
+    """
+    Log data to a JSON file in the logs directory.
+
+    Args:
+        data (dict): The data to log
+        log_type (str): Type of log entry (e.g., 'openai_request', 'openai_response', 'user_message')
+    """
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    log_file = logs_dir / f"{today}.json"
+
+    # Add timestamp and log type
+    log_entry = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "type": log_type,
+        "data": data
+    }
+
+    # Append to the log file
+    with open(log_file, "a") as f:
+        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
 # Get environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -63,7 +93,18 @@ async def translate_with_openai(text, additional_prompt=""):
     """
 
     try:
-        logger.info(f"Translating with OpenAI prompt: {prompt}")
+
+        # Log the request to OpenAI
+        request_data = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text}
+            ],
+            "max_tokens": 150
+        }
+        log_to_file(request_data, "openai_request")
+
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -72,9 +113,31 @@ async def translate_with_openai(text, additional_prompt=""):
             ],
             max_tokens=150
         )
+
+        # Log the response from OpenAI
+        response_data = {
+            "content": response.choices[0].message.content.strip(),
+            "model": response.model,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+        }
+        log_to_file(response_data, "openai_response")
+
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error translating with OpenAI: {e}")
+
+        # Log the error
+        error_data = {
+            "error": str(e),
+            "text": text,
+            "additional_prompt": additional_prompt
+        }
+        log_to_file(error_data, "openai_error")
+
         return f"Error translating: {str(e)}"
 
 async def add_to_anki(front, back, sentence=""):
@@ -105,9 +168,28 @@ async def add_to_anki(front, back, sentence=""):
             }
         }
 
+        # Log the Anki request
+        anki_request_data = {
+            "action": "addNote",
+            "deck": ANKI_DECK_NAME,
+            "model": ANKI_NOTE_TYPE,
+            "front": front,
+            "back": back,
+            "sentence": sentence
+        }
+        log_to_file(anki_request_data, "anki_request")
+
         async with aiohttp.ClientSession() as session:
             async with session.post(ANKI_CONNECT_URL, json=payload) as response:
                 result = await response.json()
+
+        # Log the Anki response
+        anki_response_data = {
+            "success": not bool(result.get("error")),
+            "result": result.get("result") if not result.get("error") else None,
+            "error": result.get("error") if result.get("error") else None
+        }
+        log_to_file(anki_response_data, "anki_response")
 
         if result.get("error"):
             logger.error(f"Error adding to Anki: {result.get('error')}")
@@ -116,6 +198,16 @@ async def add_to_anki(front, back, sentence=""):
         return True, result.get("result")
     except Exception as e:
         logger.error(f"Error connecting to Anki: {e}")
+
+        # Log the error
+        error_data = {
+            "error": str(e),
+            "front": front,
+            "back": back,
+            "sentence": sentence
+        }
+        log_to_file(error_data, "anki_error")
+
         return False, str(e)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -160,6 +252,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handle the user message."""
     text = update.message.text
     target_language = context.user_data.get('target_language', 'English')
+
+    # Log the user message
+    user_data = {
+        "user_id": update.effective_user.id,
+        "username": update.effective_user.username,
+        "message": text,
+        "chat_id": update.effective_chat.id,
+        "target_language": target_language
+    }
+    log_to_file(user_data, "user_message")
 
     # Send a "typing" action
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
@@ -207,6 +309,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     translation = translation_data.get('translation', '')
     sentence = translation_data.get('sentence', '')
 
+    # Log the user action
+    action_data = {
+        "user_id": update.effective_user.id,
+        "username": update.effective_user.username,
+        "action": query.data,
+        "original": original,
+        "translation": translation,
+        "sentence": sentence
+    }
+    log_to_file(action_data, "user_action")
+
     # Handle different button actions
     if query.data == "add":
         # Add to Anki
@@ -249,6 +362,17 @@ async def handle_retry_response(update: Update, context: ContextTypes.DEFAULT_TY
     # Get the original translation data
     translation_data = context.user_data['current_translation']
     original = translation_data['original']
+
+    # Log the retry attempt
+    retry_data = {
+        "user_id": update.effective_user.id,
+        "username": update.effective_user.username,
+        "original": original,
+        "previous_translation": translation_data.get('translation', ''),
+        "previous_sentence": translation_data.get('sentence', ''),
+        "additional_context": additional_context
+    }
+    log_to_file(retry_data, "retry_attempt")
 
     # Send a "typing" action
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
@@ -302,6 +426,20 @@ def main() -> None:
 
     # Register message handler for retry responses first (to have higher priority)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_retry_response))
+
+    # Log bot startup
+    startup_data = {
+        "bot_token_available": bool(TELEGRAM_BOT_TOKEN),
+        "openai_api_key_available": bool(OPENAI_API_KEY),
+        "anki_deck_name": ANKI_DECK_NAME,
+        "anki_note_type": ANKI_NOTE_TYPE,
+        "anki_connect_url": ANKI_CONNECT_URL,
+        "environment": {
+            "python_version": os.sys.version,
+            "platform": os.sys.platform
+        }
+    }
+    log_to_file(startup_data, "bot_startup")
 
     # Start the Bot
     logger.info("Bot started")
