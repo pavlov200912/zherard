@@ -277,21 +277,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         'original': text,
         'translation': translation,
         'sentence': sentence,
-        'prompt': None  # Will be used for retry functionality
+        'prompt': None,  # Will be used for retry functionality
+        'flipped': False  # Track if the card is flipped
     }
 
-    # Create inline keyboard with Add/Discard/Retry options
+    # Create inline keyboard with Add/Discard/Retry/Flip options
     keyboard = [
         [
             InlineKeyboardButton("Add", callback_data="add"),
             InlineKeyboardButton("Discard", callback_data="discard"),
-            InlineKeyboardButton("Retry", callback_data="retry")
+            InlineKeyboardButton("Retry", callback_data="retry"),
+            InlineKeyboardButton("Flip", callback_data="flip")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # Send the translation with the options
-    response = f"Translation result:\n\n📝 Original: {text}\n\n🔄 Translation: {translation}\n\n📋 Example: {sentence}\n\nWhat would you like to do?"
+    response = f"Translation result (Flipped: No):\n\n📝 Front: {text}\n\n🔄 Back: {translation}\n\n📋 Example: {sentence}\n\nWhat would you like to do?"
     await update.message.reply_text(response, reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -322,31 +324,79 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Handle different button actions
     if query.data == "add":
-        # Add to Anki
-        success, result = await add_to_anki(original, translation, sentence)
+        # Check if the card is flipped
+        flipped = translation_data.get('flipped', False)
+
+        # Determine which is front and which is back based on flipped state
+        front = translation if flipped else original
+        back = original if flipped else translation
+
+        # Add to Anki with potentially flipped content
+        success, result = await add_to_anki(front, back, sentence)
 
         if success:
-            response = f"✅ Added to Anki:\n\n📝 Original: {original}\n\n🔄 Translation: {translation}\n\n📋 Example: {sentence}"
+            response = f"✅ Added to Anki (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}\n\n📋 Example: {sentence}"
         else:
-            response = f"❌ Failed to add to Anki: {result}\n\n📝 Original: {original}\n\n🔄 Translation: {translation}\n\n📋 Example: {sentence}"
+            response = f"❌ Failed to add to Anki: {result} (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}\n\n📋 Example: {sentence}"
 
         await query.edit_message_text(response)
 
     elif query.data == "discard":
+        # Check if the card is flipped
+        flipped = translation_data.get('flipped', False)
+
+        # Determine which is front and which is back based on flipped state
+        front = translation if flipped else original
+        back = original if flipped else translation
+
         # Discard the translation
-        await query.edit_message_text(f"Translation discarded:\n\n📝 Original: {original}\n\n🔄 Translation: {translation}")
+        await query.edit_message_text(f"Translation discarded (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}")
 
     elif query.data == "retry":
+        # Check if the card is flipped
+        flipped = translation_data.get('flipped', False)
+
+        # Determine which is front and which is back based on flipped state
+        front = translation if flipped else original
+        back = original if flipped else translation
+
         # Ask for additional context
         await query.edit_message_text(
-            f"Please provide additional context or instructions for the translation of:\n\n"
-            f"📝 Original: {original}\n\n"
-            f"Current translation: {translation}\n\n"
+            f"Please provide additional context or instructions for the translation (Flipped: {'Yes' if flipped else 'No'}):\n\n"
+            f"📝 Front: {front}\n\n"
+            f"Current back: {back}\n\n"
             f"Reply to this message with your additional instructions."
         )
 
         # Store the message ID to identify the retry request later
         context.user_data['awaiting_retry'] = query.message.message_id
+
+    elif query.data == "flip":
+        # Flip the original and translation
+        flipped = translation_data.get('flipped', False)
+
+        # Toggle the flipped state
+        flipped = not flipped
+        context.user_data['current_translation']['flipped'] = flipped
+
+        # Create the keyboard again
+        keyboard = [
+            [
+                InlineKeyboardButton("Add", callback_data="add"),
+                InlineKeyboardButton("Discard", callback_data="discard"),
+                InlineKeyboardButton("Retry", callback_data="retry"),
+                InlineKeyboardButton("Flip", callback_data="flip")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Determine which is front and which is back based on flipped state
+        front = translation if flipped else original
+        back = original if flipped else translation
+
+        # Update the message with flipped content
+        response = f"Translation result (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}\n\n📋 Example: {sentence}\n\nWhat would you like to do?"
+        await query.edit_message_text(response, reply_markup=reply_markup)
 
 async def handle_retry_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the user's response to a retry request."""
@@ -394,19 +444,28 @@ async def handle_retry_response(update: Update, context: ContextTypes.DEFAULT_TY
     # Update the translation data
     context.user_data['current_translation']['translation'] = translation
     context.user_data['current_translation']['sentence'] = sentence
+    # Preserve the flipped state (if it doesn't exist, it will default to False)
 
-    # Create inline keyboard with Add/Discard/Retry options
+    # Create inline keyboard with Add/Discard/Retry/Flip options
     keyboard = [
         [
             InlineKeyboardButton("Add", callback_data="add"),
             InlineKeyboardButton("Discard", callback_data="discard"),
-            InlineKeyboardButton("Retry", callback_data="retry")
+            InlineKeyboardButton("Retry", callback_data="retry"),
+            InlineKeyboardButton("Flip", callback_data="flip")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Check if the card is flipped
+    flipped = context.user_data['current_translation'].get('flipped', False)
+
+    # Determine which is front and which is back based on flipped state
+    front = translation if flipped else original
+    back = original if flipped else translation
+
     # Send the updated translation with the options
-    response = f"Updated translation with additional context:\n\n📝 Original: {original}\n\n🔄 Translation: {translation}\n\n📋 Example: {sentence}\n\nWhat would you like to do?"
+    response = f"Updated translation with additional context (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}\n\n📋 Example: {sentence}\n\nWhat would you like to do?"
     await update.message.reply_text(response, reply_markup=reply_markup)
 
     # Clear the awaiting_retry flag
