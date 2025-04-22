@@ -23,6 +23,8 @@ A Telegram bot that translates unknown phrases using OpenAI and sends them to yo
 
 The system consists of two main components:
 
+### Standard Setup (Components on Different Machines)
+
 1. **Server Bot (`server_bot.py`)**: 
    - Runs on your remote server
    - Handles Telegram messages
@@ -36,6 +38,19 @@ The system consists of two main components:
    - Fetches pending cards from the server
    - Adds cards to Anki via AnkiConnect
    - Reports back to the server which cards were successfully added
+
+### Alternative Setup (Both Components on Remote Server)
+
+You can also run both components on the remote server and connect to Anki on your local machine via an SSH tunnel:
+
+1. **Server Bot (`server_bot.py`)**: 
+   - Runs on your remote server
+   - Functions the same as in the standard setup
+
+2. **Local Helper (`local_anki_adder.py`)**: 
+   - Also runs on your remote server
+   - Connects to AnkiConnect on your local machine via SSH tunnel
+   - Otherwise functions the same as in the standard setup
 
 ## Setup
 
@@ -98,7 +113,9 @@ RUN_ONCE=false
 
 ## Usage
 
-### Server Setup
+### Standard Setup (Components on Different Machines)
+
+#### Server Setup
 
 1. Deploy the server bot to your remote server.
 
@@ -109,7 +126,7 @@ RUN_ONCE=false
 
 3. The server will start the Telegram bot and a Flask API server on the specified port.
 
-### Local Helper Setup
+#### Local Helper Setup
 
 1. Install the local helper on your machine where Anki is installed.
 
@@ -124,6 +141,73 @@ RUN_ONCE=false
    - On macOS: Use launchd (see instructions below)
    - On Windows: Use Task Scheduler
    - On Linux: Use cron or systemd
+
+### Alternative Setup (Both Components on Remote Server)
+
+This setup allows you to run both the server bot and the local helper on the remote server, while still connecting to Anki on your local machine.
+
+#### SSH Tunnel Setup
+
+1. On your local machine (where Anki is installed), set up an SSH tunnel to the remote server:
+   ```
+   ssh -R 8765:localhost:8765 username@remote_server_ip
+   ```
+   This creates a reverse tunnel that forwards requests to port 8765 on the remote server to port 8765 on your local machine.
+
+2. For a persistent tunnel that stays connected even if your connection drops, you can use:
+   ```
+   ssh -R 8765:localhost:8765 -N -o "ServerAliveInterval 60" -o "ExitOnForwardFailure yes" username@remote_server_ip
+   ```
+
+3. On macOS or Linux, you can use tools like `autossh` for a more robust tunnel:
+   ```
+   autossh -M 0 -R 8765:localhost:8765 -N username@remote_server_ip
+   ```
+
+#### Remote Server Setup
+
+1. Deploy both `server_bot.py` and `local_anki_adder.py` to your remote server.
+
+2. Configure the `.env` file on the remote server:
+   ```
+   # Telegram Bot Token (get from BotFather)
+   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+
+   # OpenAI API Key
+   OPENAI_API_KEY=your_openai_api_key_here
+
+   # Anki settings
+   ANKI_DECK_NAME=your_anki_deck_name
+   ANKI_NOTE_TYPE=Basic (or your custom note type)
+   ANKI_FRONT_FIELD=Front
+   ANKI_BACK_FIELD=Back
+   ANKI_SENTENCE_FIELD=Sentence
+
+   # API settings
+   API_HOST=0.0.0.0
+   API_PORT=5000
+   API_SECRET=your_secure_secret_here
+
+   # For local_anki_adder.py
+   SERVER_URL=http://localhost:5000
+   ANKI_CONNECT_URL=http://localhost:8765
+   CHECK_INTERVAL=600
+   RUN_ONCE=false
+   ```
+
+3. Start the server bot:
+   ```
+   python server_bot.py
+   ```
+
+4. Start the local helper:
+   ```
+   python local_anki_adder.py
+   ```
+
+5. Both components will now run on the remote server, with the local helper connecting to Anki on your local machine through the SSH tunnel.
+
+6. Make sure to keep Anki running on your local machine and maintain the SSH tunnel for the system to work properly.
 
 ### Using the Bot
 
@@ -272,13 +356,25 @@ RUN_ONCE=false
   - AnkiConnect is listening on the URL specified in your `.env` file (default: http://localhost:8765)
   - Your firewall isn't blocking connections to port 8765
 
+### SSH Tunnel Issues (Alternative Setup)
+- If you're using the alternative setup with both components on the remote server:
+  - Verify the SSH tunnel is active by running `netstat -an | grep 8765` on the remote server
+  - If the tunnel is not showing up, try reestablishing it from your local machine
+  - Make sure your SSH connection stays alive by using the ServerAliveInterval option
+  - Consider using `autossh` for a more robust tunnel that automatically reconnects
+  - Check that your local machine's firewall allows incoming connections on the SSH port
+  - Ensure Anki is running on your local machine while the tunnel is active
+  - If you're getting "Connection refused" errors, check that AnkiConnect is properly installed and Anki is running
+
 ### Common Error Messages
 - "Failed to connect to server" - The server is not running or not accessible
 - "Unauthorized" - The API_SECRET doesn't match between server and local helper
 - "Failed to connect to Anki" - Anki is not running or AnkiConnect is not installed
+- "Connection refused" - When using SSH tunnel, the tunnel might be down or Anki is not running
 - "Deck not found" - The deck name in your `.env` file doesn't match any deck in Anki
 - "Note type not found" - The note type specified doesn't exist in your Anki collection
 - "Field not found" - A field name in your `.env` file doesn't match any field in your note type
+- "Channel closed" - SSH tunnel has been closed, needs to be reestablished
 
 ### Translation Issues
 - If translations aren't working, check:

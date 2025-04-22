@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Local helper script that syncs pending cards from the server to Anki.
-This script is designed to run periodically on a local machine where Anki is installed.
+Helper script that syncs pending cards from the server to Anki.
+This script can run on a remote server and connect to a local Anki instance via SSH tunnel.
+
+To set up the SSH tunnel from your local machine to the remote server:
+    ssh -R 8765:localhost:8765 username@remote_server_ip
+
+This creates a reverse tunnel that forwards requests to port 8765 on the remote server
+to port 8765 on your local machine where Anki Connect is running.
 """
 import os
 import sys
