@@ -253,7 +253,7 @@ def load_user_configs():
 def save_user_configs(configs):
     """Save user configurations to the user_configs.json file."""
     with open("user_configs.json", "w") as f:
-        json.dump(configs, indent=2)
+        json.dump(configs, f, indent=2)
 
 def get_user_config(user_id):
     """Get the configuration for a specific user."""
