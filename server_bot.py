@@ -142,24 +142,55 @@ def get_pending_cards():
     queue = load_queue()
     return [card for card in queue if card["status"] == "pending"]
 
-async def translate_with_openai(text, additional_prompt=""):
+async def translate_with_openai(text, target_language="French", additional_prompt=""):
     """Translate text using OpenAI."""
 
+    # Determine language settings based on target_language
+    if target_language == "German":
+        target_lang = "German"
+        example_lang = "German"
+        example_sentence_lang = "German"
+        from_lang = "Russian (or English if the word makes more sense in English)"
+    else:  # Default to French
+        target_lang = "French"
+        example_lang = "French"
+        example_sentence_lang = "French"
+        from_lang = "Russian (or English if the word makes more sense in English)"
+
+    # Create examples based on target language
+    if target_lang == "German":
+        example1_request = "der Tisch"
+        example1_translation = "[RUS] стол"
+        example1_sentence = "Ich habe mein Buch auf den Tisch gelegt."
+
+        example2_request = "арбуз"
+        example2_translation = "[GER] die Wassermelone"
+        example2_sentence = "Diese Wassermelone ist sehr reif."
+    else:  # French examples
+        example1_request = "la table"
+        example1_translation = "[ENG] the table"
+        example1_sentence = "J'ai posé mon livre sur la table."
+
+        example2_request = "арбуз"
+        example2_translation = "[FRE] la pastèque"
+        example2_sentence = "Cette pastèque est très mûre."
+
     prompt = f"""
-        You are a helpful translator. Translate the following text to French or from French to Russian (or English if the word is makes more sense in English) and provide a brief explanation or context if relevant.
-    The sentence should always be in French. 
+        You are a helpful translator. Translate the following text to {target_lang} or from {target_lang} to {from_lang} and provide a brief explanation or context if relevant.
+    The sentence should always be in {example_sentence_lang}.
     {additional_prompt}
-    You are used for Telegram Bot with Anki card, so keep the reponse sturctured as follows:
+    You are used for Telegram Bot with Anki card, so keep the response structured as follows:
 
-    Request: la table
-    Translation: [ENG] the table
-    Sentence: J'ai posé mon livre sur la table. 
+    Request: {example1_request}
+    Translation: {example1_translation}
+    Sentence: {example1_sentence}
 
-    Request: арбуз
-    Translation: [FRE] la pastèque
-    Sentence: Cette pastèque est très mûre.
+    Request: {example2_request}
+    Translation: {example2_translation}
+    Sentence: {example2_sentence}
 
     Request: {text}
+
     """
 
     try:
@@ -210,7 +241,7 @@ async def translate_with_openai(text, additional_prompt=""):
 
         return f"Error translating: {str(e)}"
 
-async def queue_card_for_anki(front, back, sentence=""):
+async def queue_card_for_anki(front, back, sentence="", user_id=None):
     """Queue a card for later addition to Anki."""
     try:
         # Create card data
@@ -221,7 +252,8 @@ async def queue_card_for_anki(front, back, sentence=""):
                 ANKI_FRONT_FIELD: front,
                 ANKI_BACK_FIELD: back
             },
-            "tags": ["telegram-bot", "auto-generated"]
+            "tags": ["telegram-bot", "auto-generated"],
+            "user_id": user_id
         }
 
         # Add sentence field if provided
@@ -252,9 +284,23 @@ async def queue_card_for_anki(front, back, sentence=""):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
+
+    # Create inline keyboard with language options
+    keyboard = [
+        [
+            InlineKeyboardButton("French", callback_data="lang_French"),
+            InlineKeyboardButton("German", callback_data="lang_German")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Set default language if not already set
+    if 'target_language' not in context.user_data:
+        context.user_data['target_language'] = 'French'
+
     await update.message.reply_markdown_v2(
-        f'Hi {user.mention_markdown_v2()}! Send me any phrase you want to translate and add to Anki.',
-        reply_markup=ForceReply(selective=True),
+        f'Hi {user.mention_markdown_v2()}! Please select your target language:',
+        reply_markup=reply_markup,
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -264,7 +310,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Commands:\n"
         "/start - Start the bot\n"
         "/help - Show this help message\n"
-        "/language [language] - Set target language (default: English)"
+        "/language [language] - Set target language (French or German)"
     )
 
 def parse_translation_response(response_text):
@@ -290,7 +336,7 @@ def parse_translation_response(response_text):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the user message."""
     text = update.message.text
-    target_language = context.user_data.get('target_language', 'English')
+    target_language = context.user_data.get('target_language', 'French')
 
     # Log the user message
     user_data = {
@@ -340,6 +386,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()  # Answer the callback query to stop the loading animation
 
+    # Check if this is a language selection callback
+    if query.data.startswith("lang_"):
+        # Extract the language from the callback data
+        selected_language = query.data.replace("lang_", "")
+
+        # Set the language in user data
+        context.user_data['target_language'] = selected_language
+
+        # Log the language selection
+        language_data = {
+            "user_id": update.effective_user.id,
+            "username": update.effective_user.username,
+            "action": "language_selection",
+            "selected_language": selected_language
+        }
+        log_to_file(language_data, "user_action")
+
+        # Update the message to confirm language selection
+        await query.edit_message_text(
+            f"Target language set to {selected_language}. You can now send me any phrase you want to translate and add to Anki."
+        )
+        return
+
+    # Handle other button actions (for translations)
     # Get the current translation data from user context
     translation_data = context.user_data.get('current_translation', {})
     if not translation_data:
@@ -371,7 +441,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         back = original if flipped else translation
 
         # Queue the card for later addition to Anki
-        success, result = await queue_card_for_anki(front, back, sentence)
+        success, result = await queue_card_for_anki(
+            front, 
+            back, 
+            sentence, 
+            user_id=update.effective_user.id
+        )
 
         if success:
             response = f"✅ Queued for Anki (Flipped: {'Yes' if flipped else 'No'}):\n\n📝 Front: {front}\n\n🔄 Back: {back}\n\n📋 Example: {sentence}\n\nThe card will be added to Anki when your local helper syncs."
@@ -474,8 +549,12 @@ async def handle_retry_response(update: Update, context: ContextTypes.DEFAULT_TY
     # Store the enhanced prompt for reference
     context.user_data['current_translation']['prompt'] = enhanced_prompt
 
-    # Translate with the enhanced prompt
-    translation_response = await translate_with_openai(original, enhanced_prompt)
+    # Get the user's target language
+    target_language = context.user_data.get('target_language', 'French')
+
+    # Translate with the enhanced prompt and target language
+    # Pass the target language and enhanced prompt as separate parameters
+    translation_response = await translate_with_openai(original, target_language, enhanced_prompt)
 
     # Parse the translation response
     translation, sentence = parse_translation_response(translation_response)
@@ -574,6 +653,49 @@ def run_flask_app():
                 logger.error(f"API server error: {e}")
                 return None  # For other errors, don't try more ports
 
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set the target language."""
+    # Check if a language was provided
+    if context.args and len(context.args) > 0:
+        requested_language = context.args[0].capitalize()
+
+        # Validate the language
+        if requested_language in ["French", "German"]:
+            # Set the language in user data
+            context.user_data['target_language'] = requested_language
+            await update.message.reply_text(f"Target language set to {requested_language}.")
+        else:
+            # Create inline keyboard with language options
+            keyboard = [
+                [
+                    InlineKeyboardButton("French", callback_data="lang_French"),
+                    InlineKeyboardButton("German", callback_data="lang_German")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(
+                "Please select a valid language:",
+                reply_markup=reply_markup
+            )
+    else:
+        # If no language was provided, show the current language and options
+        current_language = context.user_data.get('target_language', 'French')
+
+        # Create inline keyboard with language options
+        keyboard = [
+            [
+                InlineKeyboardButton("French", callback_data="lang_French"),
+                InlineKeyboardButton("German", callback_data="lang_German")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            f"Current target language: {current_language}\nSelect a new language:",
+            reply_markup=reply_markup
+        )
+
 def main() -> None:
     """Start the bot and API server."""
     # Create the Application and pass it your bot's token
@@ -582,6 +704,7 @@ def main() -> None:
     # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("language", language_command))
 
     # Register callback query handler for button presses
     application.add_handler(CallbackQueryHandler(button_callback))

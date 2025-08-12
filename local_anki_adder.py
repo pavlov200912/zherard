@@ -38,6 +38,46 @@ API_SECRET = os.getenv("API_SECRET", "change_this_in_production")
 ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))  # Default: 10 minutes
 
+# Default Anki settings (used if no user-specific settings are found)
+DEFAULT_DECK_NAME = os.getenv("ANKI_DECK_NAME", os.getenv("DEFAULT_DECK_NAME", "Default"))
+DEFAULT_NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", os.getenv("DEFAULT_NOTE_TYPE", "Basic"))
+
+# Path to user configurations file
+USER_CONFIG_FILE = Path("user_configs.json")
+
+def load_user_configs():
+    """Load user-specific Anki configurations from JSON file."""
+    if not USER_CONFIG_FILE.exists():
+        # Create default config file if it doesn't exist
+        default_config = {
+            "default": {
+                "deck_name": DEFAULT_DECK_NAME,
+                "note_type": DEFAULT_NOTE_TYPE
+            }
+        }
+        with open(USER_CONFIG_FILE, 'w') as f:
+            json.dump(default_config, f, indent=2)
+        logger.info(f"Created default user configuration file at {USER_CONFIG_FILE}")
+        return default_config
+
+    try:
+        with open(USER_CONFIG_FILE, 'r') as f:
+            configs = json.load(f)
+        logger.info(f"Loaded user configurations for {len(configs)} users")
+        return configs
+    except Exception as e:
+        logger.error(f"Error loading user configurations: {e}")
+        # Return default config if there's an error
+        return {
+            "default": {
+                "deck_name": DEFAULT_DECK_NAME,
+                "note_type": DEFAULT_NOTE_TYPE
+            }
+        }
+
+# Load user configurations
+USER_CONFIGS = load_user_configs()
+
 def is_anki_running():
     """Check if Anki is running by testing the AnkiConnect API."""
     try:
@@ -117,11 +157,36 @@ def get_pending_cards():
 def add_card_to_anki(card_data):
     """Add a card to Anki via AnkiConnect."""
     try:
+        # Extract user information
+        user_id = card_data.get("user_id")
+
+        # Get user-specific configuration if available
+        user_config = None
+        if user_id:
+            # Get config by user_id
+            user_config = USER_CONFIGS.get(str(user_id))
+
         # Extract card data
-        deck_name = card_data.get("deck_name")
-        model_name = card_data.get("model_name")
+        deck_name = card_data.get("deck_name", DEFAULT_DECK_NAME)
+        model_name = card_data.get("model_name", DEFAULT_NOTE_TYPE)
         fields = card_data.get("fields", {})
         tags = card_data.get("tags", [])
+
+        # Override with user-specific settings if available
+        if user_config:
+            # Only override if the user config has these settings
+            if "deck_name" in user_config:
+                deck_name = user_config["deck_name"]
+            if "note_type" in user_config:
+                model_name = user_config["note_type"]
+
+            # Add user tag
+            if user_id:
+                tags.append(f"user-{user_id}")
+
+            logger.info(f"Using user-specific configuration for user {user_id}")
+        else:
+            logger.info(f"No user-specific configuration found for user {user_id}, using default")
 
         # Create AnkiConnect payload
         payload = {

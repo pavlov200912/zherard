@@ -311,6 +311,76 @@ This setup allows you to run both the server bot and the local helper on the rem
     ANKI_SENTENCE_FIELD=Sentence
     ```
 
+## Multi-User Setup
+
+This system supports multiple users, allowing each user to have their cards added to their own Anki deck. Here's how to set it up:
+
+### Server-Side Configuration
+
+The server bot automatically includes user ID in the card data when a user adds a card to the queue. No additional configuration is needed on the server side.
+
+### Local Helper Configuration
+
+The local helper supports user-specific Anki configurations through a JSON configuration file. Here's how to set it up:
+
+1. When you first run the local helper after updating to the multi-user version, it will automatically create a `user_configs.json` file in the same directory as the script.
+
+2. Edit this file to add configurations for each user:
+   ```json
+   {
+     "default": {
+       "deck_name": "Default",
+       "note_type": "Basic"
+     },
+     "123456789": {
+       "deck_name": "French::User1",
+       "note_type": "Basic with Sentence"
+     },
+     "987654321": {
+       "deck_name": "German::User2",
+       "note_type": "Basic with Sentence"
+     }
+   }
+   ```
+
+3. The configuration file uses user IDs (as strings) as keys. If no configuration is found for a user ID, it will fall back to the "default" configuration.
+
+4. Each user configuration can specify:
+   - `deck_name`: The name of the Anki deck to add cards to
+   - `note_type`: The note type to use for cards
+
+5. You can also set default values in your `.env` file:
+   ```
+   DEFAULT_DECK_NAME=Default
+   DEFAULT_NOTE_TYPE=Basic
+   ```
+
+### Running Multiple Instances
+
+If you need to connect to multiple Anki instances (e.g., on different computers), you have several options:
+
+1. **SSH Tunnels to Different Ports**: Set up multiple SSH tunnels, each forwarding to a different port on the remote server:
+   ```
+   # On computer 1
+   ssh -R 8765:localhost:8765 username@remote_server_ip
+
+   # On computer 2
+   ssh -R 8766:localhost:8765 username@remote_server_ip
+   ```
+
+   Then configure each local helper to use the appropriate port:
+   ```
+   # For computer 1
+   ANKI_CONNECT_URL=http://localhost:8765
+
+   # For computer 2
+   ANKI_CONNECT_URL=http://localhost:8766
+   ```
+
+2. **Separate Queue Files**: You can run multiple instances of the local helper, each with its own queue file and API endpoint on the server. This requires modifying the server code to support multiple queues.
+
+3. **User Filtering**: The simplest approach is to use a single local helper with user-specific configurations, as described above. Each user's cards will be added to their own deck in the same Anki instance.
+
 ## Troubleshooting
 
 ### Server Bot Issues
