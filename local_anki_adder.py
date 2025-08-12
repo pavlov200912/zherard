@@ -3,11 +3,19 @@
 Helper script that syncs pending cards from the server to Anki.
 This script can run on a remote server and connect to a local Anki instance via SSH tunnel.
 
-To set up the SSH tunnel from your local machine to the remote server:
-    ssh -R 8765:localhost:8765 username@remote_server_ip
+Each user is automatically assigned a unique Anki Connect port based on their position in the user_configs.json file.
+The default port is 8765, and each user gets the next available port (e.g., 8766, 8767, etc.).
 
-This creates a reverse tunnel that forwards requests to port 8765 on the remote server
-to port 8765 on your local machine where Anki Connect is running.
+To set up the SSH tunnel from your local machine to the remote server for a specific user:
+    ssh -R <user_port>:localhost:<user_port> username@remote_server_ip
+
+For example, for the first user (assigned port 8766):
+    ssh -R 8766:localhost:8766 username@remote_server_ip
+
+This creates a reverse tunnel that forwards requests to the specified port on the remote server
+to the same port on your local machine where Anki Connect is running.
+
+You can check the assigned port for each user in the logs when this script starts.
 """
 import os
 import sys
@@ -38,54 +46,68 @@ API_SECRET = os.getenv("API_SECRET", "change_this_in_production")
 ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))  # Default: 10 minutes
 
-# Default Anki settings (used if no user-specific settings are found)
-DEFAULT_DECK_NAME = os.getenv("ANKI_DECK_NAME", os.getenv("DEFAULT_DECK_NAME", "Default"))
-DEFAULT_NOTE_TYPE = os.getenv("ANKI_NOTE_TYPE", os.getenv("DEFAULT_NOTE_TYPE", "Basic"))
 
 # Path to user configurations file
 USER_CONFIG_FILE = Path("user_configs.json")
 
 def load_user_configs():
     """Load user-specific Anki configurations from JSON file."""
-    if not USER_CONFIG_FILE.exists():
-        # Create default config file if it doesn't exist
-        default_config = {
-            "default": {
-                "deck_name": DEFAULT_DECK_NAME,
-                "note_type": DEFAULT_NOTE_TYPE
-            }
-        }
-        with open(USER_CONFIG_FILE, 'w') as f:
-            json.dump(default_config, f, indent=2)
-        logger.info(f"Created default user configuration file at {USER_CONFIG_FILE}")
-        return default_config
-
-    try:
-        with open(USER_CONFIG_FILE, 'r') as f:
-            configs = json.load(f)
-        logger.info(f"Loaded user configurations for {len(configs)} users")
-        return configs
-    except Exception as e:
-        logger.error(f"Error loading user configurations: {e}")
-        # Return default config if there's an error
-        return {
-            "default": {
-                "deck_name": DEFAULT_DECK_NAME,
-                "note_type": DEFAULT_NOTE_TYPE
-            }
-        }
+    with open(USER_CONFIG_FILE, 'r') as f:
+        configs = json.load(f)
+    logger.info(f"Loaded user configurations for {len(configs)} users")
+    return configs
 
 # Load user configurations
 USER_CONFIGS = load_user_configs()
 
-def is_anki_running():
-    """Check if Anki is running by testing the AnkiConnect API."""
+def get_anki_connect_url(user_id=None):
+    """Get the Anki Connect URL for a specific user."""
+    # Default Anki Connect URL
+    base_url = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
+    base_port = 8765  # Default Anki Connect port
+
+    # If no user_id is provided, return the default URL
+    if not user_id:
+        return base_url
+
+    # Extract the protocol and hostname from the base URL
+    if "://" in base_url:
+        protocol, rest = base_url.split("://", 1)
+        hostname = rest.split(":", 1)[0] if ":" in rest else rest.split("/", 1)[0]
+
+        # Get all user IDs from the config
+        user_ids = list(USER_CONFIGS.keys())
+
+        # Skip 'default' if it exists
+        if 'default' in user_ids:
+            user_ids.remove('default')
+
+        # Find the index of the current user_id in the list
+        try:
+            user_index = user_ids.index(str(user_id))
+            # Calculate port: base_port + (index + 1)
+            # This ensures the first user gets port 8766, second gets 8767, etc.
+            user_port = base_port + (user_index + 1)
+            logger.info(f"Assigned port {user_port} to user {user_id} (index {user_index})")
+        except ValueError:
+            # If user_id not found in the list, use default port
+            user_port = base_port
+            logger.info(f"User {user_id} not found in config, using default port {user_port}")
+
+        # Construct the URL with the calculated port
+        return f"{protocol}://{hostname}:{user_port}"
+
+    return base_url
+
+def is_anki_running(user_id=None):
+    """Check if Anki is running by testing the AnkiConnect API for a specific user."""
     try:
         payload = {
             "action": "version",
             "version": 6
         }
-        response = requests.post(ANKI_CONNECT_URL, json=payload, timeout=5)
+        anki_url = get_anki_connect_url(user_id)
+        response = requests.post(anki_url, json=payload, timeout=5)
         return response.status_code == 200
     except requests.exceptions.RequestException:
         return False
@@ -167,8 +189,8 @@ def add_card_to_anki(card_data):
             user_config = USER_CONFIGS.get(str(user_id))
 
         # Extract card data
-        deck_name = card_data.get("deck_name", DEFAULT_DECK_NAME)
-        model_name = card_data.get("model_name", DEFAULT_NOTE_TYPE)
+        deck_name = card_data.get("deck_name")
+        model_name = card_data.get("model_name")
         fields = card_data.get("fields", {})
         tags = card_data.get("tags", [])
 
@@ -179,10 +201,6 @@ def add_card_to_anki(card_data):
                 deck_name = user_config["deck_name"]
             if "note_type" in user_config:
                 model_name = user_config["note_type"]
-
-            # Add user tag
-            if user_id:
-                tags.append(f"user-{user_id}")
 
             logger.info(f"Using user-specific configuration for user {user_id}")
         else:
@@ -205,8 +223,12 @@ def add_card_to_anki(card_data):
             }
         }
 
+        # Get user-specific Anki Connect URL
+        anki_url = get_anki_connect_url(user_id)
+        logger.info(f"Using Anki Connect URL for user {user_id}: {anki_url}")
+
         # Send request to AnkiConnect
-        response = requests.post(ANKI_CONNECT_URL, json=payload, timeout=10)
+        response = requests.post(anki_url, json=payload, timeout=10)
         result = response.json()
 
         if result.get("error"):
@@ -246,11 +268,6 @@ def mark_cards_as_added(card_ids):
 
 def process_pending_cards():
     """Process all pending cards."""
-    # Check if Anki is running
-    if not is_anki_running():
-        logger.info("Anki is not running. Skipping this sync.")
-        return
-
     # Get pending cards
     pending_cards = get_pending_cards()
     if not pending_cards:
@@ -259,27 +276,44 @@ def process_pending_cards():
 
     logger.info(f"Found {len(pending_cards)} pending cards to process.")
 
-    # Process each card
-    successful_card_ids = []
+    # Group cards by user_id
+    cards_by_user = {}
     for card in pending_cards:
-        card_id = card.get("id")
-        if not card_id:
-            logger.warning("Card missing ID, skipping.")
+        user_id = card.get("user_id")
+        if user_id not in cards_by_user:
+            cards_by_user[user_id] = []
+        cards_by_user[user_id].append(card)
+
+    # Process cards for each user separately
+    successful_card_ids = []
+    for user_id, user_cards in cards_by_user.items():
+        # Check if Anki is running for this user
+        if not is_anki_running(user_id):
+            logger.info(f"Anki is not running for user {user_id}. Skipping cards for this user.")
             continue
 
-        logger.info(f"Processing card {card_id}")
-        success, result = add_card_to_anki(card)
+        logger.info(f"Processing {len(user_cards)} cards for user {user_id}")
 
-        if success:
-            logger.info(f"Successfully added card {card_id} to Anki.")
-            successful_card_ids.append(card_id)
-        else:
-            # If the error is about duplicate, we can consider it as "added"
-            if "already exists" in str(result).lower() or "duplicate" in str(result).lower():
-                logger.info(f"Card {card_id} already exists in Anki, marking as added.")
+        # Process each card for this user
+        for card in user_cards:
+            card_id = card.get("id")
+            if not card_id:
+                logger.warning("Card missing ID, skipping.")
+                continue
+
+            logger.info(f"Processing card {card_id} for user {user_id}")
+            success, result = add_card_to_anki(card)
+
+            if success:
+                logger.info(f"Successfully added card {card_id} to Anki for user {user_id}.")
                 successful_card_ids.append(card_id)
             else:
-                logger.error(f"Failed to add card {card_id}: {result}")
+                # If the error is about duplicate, we can consider it as "added"
+                if "already exists" in str(result).lower() or "duplicate" in str(result).lower():
+                    logger.info(f"Card {card_id} already exists in Anki for user {user_id}, marking as added.")
+                    successful_card_ids.append(card_id)
+                else:
+                    logger.error(f"Failed to add card {card_id} for user {user_id}: {result}")
 
     # Mark successful cards as added
     if successful_card_ids:
@@ -296,8 +330,17 @@ def main():
     """Main function to run the script."""
     logger.info("Starting Anki Helper")
     logger.info(f"Server URL: {SERVER_URL}")
-    logger.info(f"AnkiConnect URL: {ANKI_CONNECT_URL}")
+    logger.info(f"Default AnkiConnect URL: {ANKI_CONNECT_URL}")
     logger.info(f"Check interval: {CHECK_INTERVAL} seconds")
+
+    # Log user-specific Anki Connect URLs
+    logger.info("User-specific Anki Connect URLs:")
+    for user_id in USER_CONFIGS.keys():
+        if user_id != "default":
+            anki_url = get_anki_connect_url(user_id)
+            logger.info(f"  User {user_id}: {anki_url}")
+        else:
+            logger.info(f"  Default: Using default Anki Connect URL")
 
     # Run once immediately
     process_pending_cards()
