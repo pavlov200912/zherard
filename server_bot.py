@@ -241,13 +241,51 @@ async def translate_with_openai(text, target_language="French", additional_promp
 
         return f"Error translating: {str(e)}"
 
+def load_user_configs():
+    """Load user configurations from the user_configs.json file."""
+    try:
+        with open("user_configs.json", "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Return default configs if file doesn't exist or is invalid
+        return {"default": {"deck_name": "Default", "note_type": "Basic"}}
+
+def save_user_configs(configs):
+    """Save user configurations to the user_configs.json file."""
+    with open("user_configs.json", "w") as f:
+        json.dump(configs, indent=2)
+
+def get_user_config(user_id):
+    """Get the configuration for a specific user."""
+    configs = load_user_configs()
+    user_id_str = str(user_id) if user_id else "default"
+
+    # Return user-specific config if it exists, otherwise return default
+    return configs.get(user_id_str, configs.get("default", {"deck_name": "Default", "note_type": "Basic"}))
+
+def update_user_config(user_id, deck_name, note_type):
+    """Update the configuration for a specific user."""
+    configs = load_user_configs()
+    user_id_str = str(user_id) if user_id else "default"
+
+    # Update or create user config
+    configs[user_id_str] = {
+        "deck_name": deck_name,
+        "note_type": note_type
+    }
+
+    save_user_configs(configs)
+
 async def queue_card_for_anki(front, back, sentence="", user_id=None):
     """Queue a card for later addition to Anki."""
     try:
+        # Get user-specific Anki configuration
+        user_config = get_user_config(user_id)
+
         # Create card data
         card_data = {
-            "deck_name": ANKI_DECK_NAME,
-            "model_name": ANKI_NOTE_TYPE,
+            "deck_name": user_config["deck_name"],
+            "model_name": user_config["note_type"],
             "fields": {
                 ANKI_FRONT_FIELD: front,
                 ANKI_BACK_FIELD: back
@@ -298,6 +336,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if 'target_language' not in context.user_data:
         context.user_data['target_language'] = 'French'
 
+    # Reset the setup state
+    context.user_data['setup_state'] = 'language'
+
     await update.message.reply_markdown_v2(
         f'Hi {user.mention_markdown_v2()}\! Please select your target language:',
         reply_markup=reply_markup,
@@ -308,9 +349,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "Send me any phrase you want to translate and add to Anki.\n"
         "Commands:\n"
-        "/start - Start the bot\n"
+        "/start - Start the bot and configure your Anki settings\n"
         "/help - Show this help message\n"
-        "/language [language] - Set target language (French or German)"
+        "/language [language] - Set target language (French or German)\n"
+        "/config - Configure your Anki deck name and note type"
     )
 
 def parse_translation_response(response_text):
@@ -338,6 +380,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.message.text
     target_language = context.user_data.get('target_language', 'French')
 
+    # Check if we're in the setup process
+    setup_state = context.user_data.get('setup_state', None)
+
+    if setup_state == 'deck_name':
+        # User is providing their Anki deck name
+        context.user_data['temp_deck_name'] = text
+
+        # Create confirmation keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("Confirm", callback_data="confirm_deck"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Ask for confirmation
+        await update.message.reply_text(
+            f"You entered: {text}\n\nIs this the correct Anki deck name?",
+            reply_markup=reply_markup
+        )
+        return
+
+    elif setup_state == 'note_type':
+        # User is providing their Anki note type
+        context.user_data['temp_note_type'] = text
+
+        # Create confirmation keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("Confirm", callback_data="confirm_note_type"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Ask for confirmation
+        await update.message.reply_text(
+            f"You entered: {text}\n\nIs this the correct Anki note type?",
+            reply_markup=reply_markup
+        )
+        return
+
+    # Normal message handling (translation)
     # Log the user message
     user_data = {
         "user_id": update.effective_user.id,
@@ -403,10 +487,71 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         }
         log_to_file(language_data, "user_action")
 
-        # Update the message to confirm language selection
+        # Update the message to confirm language selection and ask for Anki deck name
         await query.edit_message_text(
-            f"Target language set to {selected_language}. You can now send me any phrase you want to translate and add to Anki."
+            f"Target language set to {selected_language}.\n\n"
+            f"Please enter your Anki deck name (e.g., 'French::Vocabulary'):"
         )
+
+        # Update setup state to wait for deck name
+        context.user_data['setup_state'] = 'deck_name'
+        return
+
+    # Check if this is an Anki deck name confirmation
+    if query.data == "confirm_deck":
+        # Get the deck name from user data
+        deck_name = context.user_data.get('temp_deck_name', 'Default')
+
+        # Ask for note type
+        await query.edit_message_text(
+            f"Anki deck name set to: {deck_name}\n\n"
+            f"Please enter your Anki note type (e.g., 'Basic', 'Basic with Sentence'):"
+        )
+
+        # Update setup state to wait for note type
+        context.user_data['setup_state'] = 'note_type'
+        return
+
+    # Check if this is an Anki note type confirmation
+    if query.data == "confirm_note_type":
+        # Get the note type from user data
+        note_type = context.user_data.get('temp_note_type', 'Basic')
+        deck_name = context.user_data.get('temp_deck_name', 'Default')
+
+        # Save user configuration
+        update_user_config(
+            update.effective_user.id,
+            deck_name,
+            note_type
+        )
+
+        # Log the configuration
+        config_data = {
+            "user_id": update.effective_user.id,
+            "username": update.effective_user.username,
+            "action": "anki_config_update",
+            "deck_name": deck_name,
+            "note_type": note_type
+        }
+        log_to_file(config_data, "user_action")
+
+        # Complete the setup
+        await query.edit_message_text(
+            f"Setup complete!\n\n"
+            f"Target language: {context.user_data.get('target_language', 'French')}\n"
+            f"Anki deck name: {deck_name}\n"
+            f"Anki note type: {note_type}\n\n"
+            f"You can now send me any phrase you want to translate and add to Anki."
+        )
+
+        # Clear temporary data
+        if 'temp_deck_name' in context.user_data:
+            del context.user_data['temp_deck_name']
+        if 'temp_note_type' in context.user_data:
+            del context.user_data['temp_note_type']
+        if 'setup_state' in context.user_data:
+            del context.user_data['setup_state']
+
         return
 
     # Handle other button actions (for translations)
@@ -653,6 +798,22 @@ def run_flask_app():
                 logger.error(f"API server error: {e}")
                 return None  # For other errors, don't try more ports
 
+async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure Anki settings."""
+    user_id = update.effective_user.id
+    user_config = get_user_config(user_id)
+
+    # Start the configuration process
+    context.user_data['setup_state'] = 'deck_name'
+
+    await update.message.reply_text(
+        f"Current Anki configuration:\n"
+        f"Deck name: {user_config['deck_name']}\n"
+        f"Note type: {user_config['note_type']}\n\n"
+        f"Let's update your configuration.\n\n"
+        f"Please enter your Anki deck name (e.g., 'French::Vocabulary'):"
+    )
+
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Set the target language."""
     # Check if a language was provided
@@ -705,6 +866,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("language", language_command))
+    application.add_handler(CommandHandler("config", config_command))
 
     # Register callback query handler for button presses
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -716,8 +878,11 @@ def main() -> None:
     startup_data = {
         "bot_token_available": bool(TELEGRAM_BOT_TOKEN),
         "openai_api_key_available": bool(OPENAI_API_KEY),
-        "anki_deck_name": ANKI_DECK_NAME,
-        "anki_note_type": ANKI_NOTE_TYPE,
+        "anki_field_names": {
+            "front": ANKI_FRONT_FIELD,
+            "back": ANKI_BACK_FIELD,
+            "sentence": ANKI_SENTENCE_FIELD
+        },
         "api_host": API_HOST,
         "api_port": API_PORT,
         "environment": {
@@ -743,9 +908,6 @@ if __name__ == '__main__':
         exit(1)
     if not OPENAI_API_KEY:
         logger.error("OPENAI_API_KEY not set in environment variables")
-        exit(1)
-    if not ANKI_DECK_NAME:
-        logger.error("ANKI_DECK_NAME not set in environment variables")
         exit(1)
     if not ANKI_FRONT_FIELD:
         logger.error("ANKI_FRONT_FIELD not set in environment variables")
