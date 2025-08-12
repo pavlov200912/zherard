@@ -299,7 +299,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data['target_language'] = 'French'
 
     await update.message.reply_markdown_v2(
-        f'Hi {user.mention_markdown_v2()}! Please select your target language:',
+        f'Hi {user.mention_markdown_v2()}\! Please select your target language:',
         reply_markup=reply_markup,
     )
 
